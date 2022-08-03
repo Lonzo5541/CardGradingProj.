@@ -1,0 +1,178 @@
+import json
+import os
+import math
+import boto3
+from PIL import Image
+
+def lambda_handler(event, context):
+    transactionResponse = {}
+    responseObject = {}
+    responseObject['headers'] = {}
+    responseObject['headers']['Content-Type'] = 'application/json'
+    statusCode = 200
+    testKey = ""
+    testBucket = ""
+
+    # Parse query string
+    try:
+        testKey = event['queryStringParameters']['key']
+        testBucket = event['queryStringParameters']['bucket']
+    except Exception as e:
+        statusCode = 400
+        message = "Exception of type {0}".format(type(e).__name__)
+        if (type(e) == KeyError):
+            message = "Incorrect query string parameters"
+        transactionResponse['message'] = message
+
+    if statusCode == 200:
+        # Connect to S3
+        s3 = boto3.client(
+            "s3",
+            aws_access_key_id=os.environ['S3_KEY'],
+            aws_secret_access_key=os.environ['S3_SECRET']
+        )
+        
+        # Download test image
+        filename = '/tmp/' + os.path.basename(testKey)
+        try:
+            imgfile = s3.download_file(testBucket, testKey, filename)
+        except Exception as e:
+            statusCode = int(e.response["Error"]["Code"])
+            message = "Exception of type {0}: ".format(type(e).__name__) + e.response["Error"]["Message"]
+            if statusCode == 403:
+                message = "Access forbidden"
+            elif statusCode == 404:
+                message = "Object with key " + testKey + " not found"
+            transactionResponse['message'] = message
+            responseObject['statusCode'] = statusCode
+            responseObject['body'] = json.dumps(transactionResponse)
+            return responseObject
+
+        # Hash test image
+        image = Image.open(filename)
+        testHash = hashImage(image)
+
+        # Get example images
+        response = {}
+        try:
+            response = s3.list_objects_v2(Bucket=os.environ['S3_EXAMPLE_BUCKET'], Prefix="test/")
+        except Exception as e:
+            statusCode = int(e.response["Error"]["Code"])
+            message = "Exception of type {0}: ".format(type(e).__name__) + e.response["Error"]["Message"]
+            transactionResponse['message'] = message
+            responseObject['statusCode'] = statusCode
+            responseObject['body'] = json.dumps(transactionResponse)
+            return responseObject
+
+        groundImages = []
+        for obj in response['Contents']:
+            # Download
+            exampleKey = obj['Key']
+            if exampleKey.endswith("/"):
+                continue
+            tail = os.path.basename(exampleKey)
+            filename = '/tmp/' + tail
+            try:
+                imgfile = s3.download_file(os.environ['S3_EXAMPLE_BUCKET'], exampleKey, filename)
+            except Exception as e:
+                statusCode = int(e.response["Error"]["Code"])
+                message = "Exception of type {0}: ".format(type(e).__name__) + e.response["Error"]["Message"]
+                if statusCode == 403:
+                    message = "Access forbidden"
+                elif statusCode == 404:
+                    message = "Object with key " + testKey + " not found"
+                transactionResponse['message'] = message
+                responseObject['statusCode'] = statusCode
+                responseObject['body'] = json.dumps(transactionResponse)
+                return responseObject
+
+            # Hash
+            image = Image.open(filename)
+            exampleHash = hashImage(image)
+            # Find Hamming distance
+            distance = hammingDistance(testHash, exampleHash)
+            groundImages.append([exampleKey, exampleHash, distance])
+
+        # Sort by least to most distance
+        groundImages.sort(key=lambda x:x[2])
+        matchKey = groundImages[0][0]
+        matchHash = groundImages[0][1]
+        matchDistance = groundImages[0][2]
+
+        # Get set from key
+        matchSet = os.path.basename(os.path.dirname(exampleKey))
+
+        # It's unlikely a match if distance > 5
+        isMatch = True
+        if (matchDistance > 5):
+            isMatch = False
+            matchSet = ""
+        
+        # Construct response body
+        # transactionResponse['testKey'] = testKey
+        # transactionResponse['testHash'] = testHash
+        # transactionResponse['matchKey'] = matchKey
+        # transactionResponse['matchHash'] = matchHash
+        # transactionResponse['matchDistance'] = matchDistance
+        transactionResponse['isMatch'] = isMatch
+        if (isMatch):
+            transactionResponse['matchSet'] = matchSet
+            transactionResponse['playerName'] = "Firstname Lastname"
+            transactionResponse['cardYear'] = "2022"
+            transactionResponse['cardNumber'] = "ABC123"
+            transactionResponse['cardBrand'] = "Topps"
+            transactionResponse['sport'] = "baseball"
+    
+    # Construct http response object
+    responseObject['statusCode'] = statusCode
+    responseObject['body'] = json.dumps(transactionResponse)
+    responseObject['headers'] = {
+        'Access-Control-Allow-Headers': 'Content-Type,Authorization,X-Amz-Date,X-Api-Key,X-Amz-Security-Token',
+        'Access-Control-Allow-Methods': 'OPTIONS,GET',
+        'Access-Control-Allow-Origin': '*'
+        }
+    
+    return responseObject
+
+
+# Returns a binary hash representation of image
+def hashImage(img):
+    
+#     Resizing image to 10x10 pixels
+    newsize = (10, 10)
+    smallimg = img.resize(newsize)
+    
+#     Converting image to grayscale
+    grayimg = smallimg.convert('LA')
+    
+#     Computing average pixel brightness
+    averagePixel = 0
+    for xpixel in range(newsize[0]):
+        for ypixel in range(newsize[1]):
+            averagePixel += grayimg.getpixel((xpixel, ypixel))[0]
+    averagePixel /= newsize[0] * newsize[1]
+    
+#     Hashing Image
+    binaryHash = 0
+    for xpixel in range(newsize[0]):
+        for ypixel in range(newsize[1]):
+#             Appending 1 to end if pixel is greater than average pixel
+            if grayimg.getpixel((xpixel, ypixel))[0] > averagePixel:
+                binaryHash += 1
+
+            binaryHash = binaryHash << 1
+#     Removes trailing 0
+    binaryHash = binaryHash >> 1
+
+    return binaryHash
+
+
+def hammingDistance(hash1, hash2):
+    distance = 0
+    digits = math.ceil(math.log2(max(hash1, hash2)))
+    for i in range(digits):
+        if ( not hash1 % 2 == hash2 % 2):
+            distance += 1
+        hash1 = hash1 >> 1
+        hash2 = hash2 >> 1
+    return distance
