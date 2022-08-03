@@ -1,0 +1,319 @@
+import cv2 as cv
+import uuid
+import numpy as np
+
+class Card:
+    # Constructor
+    def __init__(self, front, back):
+        self.front = cv.imread(front)
+        #self.back = cv.imread(back)
+        self.id = uuid.uuid1()
+
+
+    def getOuterContour(self, img):
+
+        th = 127              #var min thresh
+        area = 0              #var cnt area
+        maxCntInd = 0         #var contour index
+
+        # Grayscale image
+        imgray = cv.cvtColor(img, cv.COLOR_BGR2GRAY)
+
+        # Binary threshold image
+        ret, thresh = cv.threshold(imgray, th, 255, 0)
+
+        # Morphological closing - fill in holes
+        # TODO improve for accuracy
+        kernel = np.ones((30, 30), np.uint8)
+        closing = cv.morphologyEx(thresh, cv.MORPH_CLOSE, kernel)
+
+        # Find contours
+        contours, hierarchy = cv.findContours(closing, cv.RETR_TREE, cv.CHAIN_APPROX_NONE)
+
+        # Find contour with largest area - *likely* to be outer one
+        for i in range(len(contours)):
+            contour = contours[i]
+            a = cv.contourArea(contour)
+            if a > area:
+                area = a
+                maxCntInd = i
+
+        return contours[maxCntInd]
+
+    def getFrontOuterContour(self):
+        return self.getOuterContour(self.front)
+
+
+    def getBackOuterContour(self):
+        return self.getOuterContour(self.back)
+
+    # Same as getOuterContour(), but without the morphological closing
+    def getContour(self, cornerImg):
+
+        # Grayscale image
+        imgray = cv.cvtColor(cornerImg, cv.COLOR_BGR2GRAY)
+        # Binary threshold image
+        ret, thresh = cv.threshold(imgray, 50, 255, 0)
+
+        # Find contours
+        contours, hierarchy = cv.findContours(thresh, cv.RETR_TREE, cv.CHAIN_APPROX_NONE)
+
+        # Find contour with largest area - *likely* to be outer one
+        area = 0
+        maxCntInd = 0
+        for i in range(len(contours)):
+            contour = contours[i]
+            a = cv.contourArea(contour)
+            if a > area:
+                area = a
+                maxCntInd = i
+
+        return contours[maxCntInd]
+
+    def getContours(self, cornerImg):
+        # Grayscale image
+        imgray = cv.cvtColor(cornerImg, cv.COLOR_BGR2GRAY)
+        # Binary threshold image
+        ret, thresh = cv.threshold(imgray, 50, 255, 0)
+
+        # Find contours
+        contours, hierarchy = cv.findContours(thresh, cv.RETR_TREE, cv.CHAIN_APPROX_NONE)
+        return contours
+
+
+    def getIdealEdgeVals(self, outerContour):
+        #TODO make this more efficient
+        xList = []
+        yList = []
+
+        for i in range(len(outerContour)):
+            [[x, y]] = outerContour[i]
+            xList.append(x)
+            yList.append(y)
+
+        maxX = max(xList)
+        maxY = max(yList)
+        minX = min(xList)
+        minY = min(yList)
+
+        return [maxX, maxY, minX, minY]
+
+
+    def getFrontIdealEdgeVals(self):
+        outerContour = self.getFrontOuterContour()
+        return self.getIdealEdgeVals(outerContour)
+
+
+    def getBackIdealEdgeVals(self):
+        outerContour = self.getBackOuterContour()
+        return self.getIdealEdgeVals(outerContour)
+
+
+    def getFrontCropped(self):
+        idealEdges = self.getFrontIdealEdgeVals()
+        maxX = idealEdges[0]
+        maxY = idealEdges[1]
+        minX = idealEdges[2]
+        minY = idealEdges[3]
+        return self.front[minY : maxY,  minX : maxX]
+
+
+    def getBackCropped(self):
+        idealEdges = self.getBackIdealEdgeVals()
+        maxX = idealEdges[0]
+        maxY = idealEdges[1]
+        minX = idealEdges[2]
+        minY = idealEdges[3]
+        return self.back[minY : maxY,  minX : maxX]
+
+
+    def getCroppedCorners(self, image, idealEdges):
+        cropSize = int(0.05 * image.shape[0])
+
+        maxX = idealEdges[0]
+        maxY = idealEdges[1]
+        minX = idealEdges[2]
+        minY = idealEdges[3]
+
+        cornerImgs = []
+        # Top left
+        cornerImgs.append(image[minY : minY + cropSize,  minX : minX + cropSize])
+        # Top right
+        cornerImgs.append(image[minY : minY + cropSize, maxX - cropSize: maxX])
+        # Bottom left
+        cornerImgs.append(image[maxY - cropSize : maxY, minX : minX + cropSize])
+        # Bottom right
+        cornerImgs.append(image[maxY - cropSize : maxY, maxX - cropSize : maxX])
+
+        return cornerImgs
+
+
+    def getFrontCroppedCorners(self):
+        idealEdges = self.getFrontIdealEdgeVals()
+        return self.getCroppedCorners(self.front, idealEdges)
+
+
+    def getBackCroppedCorners(self):
+        idealEdges = self.getBackIdealEdgeVals()
+        return self.getCroppedCorners(self.back, idealEdges)
+
+
+    def getMissingCornerArea(self, cornerImg):
+        contour = self.getContour(cornerImg)
+        actualArea = cv.contourArea(contour)
+        idealArea = cornerImg.shape[0] * cornerImg.shape[1]
+        missArea = idealArea - actualArea
+        return missArea / idealArea
+
+
+    def getAllMissingCornerAreas(self, cornerImgs):
+        areas = []
+        for image in cornerImgs:
+            areas.append(self.getMissingCornerArea(image))
+        
+        return areas
+
+
+    def getFrontMissingCornerAreas(self):
+        cornerImgs = self.getFrontCroppedCorners()
+        return self.getAllMissingCornerAreas(cornerImgs)
+
+
+    def getBackMissingCornerAreas(self):
+        cornerImgs = self.getBackCroppedCorners()
+        return self.getAllMissingCornerAreas(cornerImgs)
+    
+    ################################################# Edge Code #################################################3
+
+    def getCroppedEdges(self, image, idealEdges):
+        cropSize = int(0.05 * image.shape[0])
+
+        maxX = idealEdges[0]
+        maxY = idealEdges[1]
+        minX = idealEdges[2]
+        minY = idealEdges[3]
+
+        edgeImgs = []
+
+        # Top
+        edgeImgs.append(image[ minY : minY + cropSize,  minX + cropSize: maxX - cropSize])
+        # Bottom
+        edgeImgs.append(image[ maxY - cropSize : maxY, minX + cropSize: maxX - cropSize])
+        # Left
+        edgeImgs.append(image[ minY + cropSize : maxY - cropSize, minX : minX + cropSize])
+        # Right
+        edgeImgs.append(image[ minY + cropSize : maxY - cropSize, maxX - cropSize: maxX]) 
+
+        return edgeImgs
+    
+    def getFrontCroppedEdges(self):
+        idealEdges = self.getFrontIdealEdgeVals()
+        return self.getCroppedEdges(self.front, idealEdges)
+
+    def getBackCroppedEdges(self):
+        idealEdges = self.getBackIdealEdgeVals()
+        return self.getCroppedEdges(self.back, idealEdges)
+
+    def getMissingEdgeArea(self, cropImg):
+        contours = self.getContours(cropImg)
+        #contour = self.getOuterContour(cropImg)
+        #actualArea = cv.contourArea(contour)
+        totalCntArea = 0
+        #add all contour areas in in the img
+        for i in range(len(contours)):
+            totalCntArea += cv.contourArea(contours[i])
+            print(totalCntArea)
+        idealArea = cropImg.shape[0] * cropImg.shape[1]
+        #missArea = idealArea - actualArea
+        missArea = idealArea - totalCntArea
+        return missArea / idealArea
+
+    def getAllMissingEdgeAreas(self, cropImgs):
+        areas = []
+        for image in cropImgs:
+            areas.append(self.getMissingEdgeArea(image))
+        return areas
+
+    def getFrontMissingEdgeAreas(self):
+        cornerImgs = self.getFrontCroppedEdges()
+        return self.getAllMissingEdgeAreas(cornerImgs)
+
+    def getBackMissingEdgeAreas(self):
+        cornerImgs = self.getBackCroppedEdges()
+        return self.getAllMissingEdgeAreas(cornerImgs)
+
+    ######################################################## Homography ######################################################
+
+    def get_destination_points(self, corners):
+        """
+        -Get destination points from corners of warped images
+        -Approximating height and width of the rectangle: we take maximum of the 2 widths and 2 heights
+        Args:
+            corners: list
+        Returns:
+            destination_corners: list
+            height: int
+            width: int
+        """
+
+        w1 = np.sqrt((corners[0][0] - corners[1][0]) ** 2 + (corners[0][1] - corners[1][1]) ** 2)
+        w2 = np.sqrt((corners[2][0] - corners[3][0]) ** 2 + (corners[2][1] - corners[3][1]) ** 2)
+        w = max(int(w1), int(w2))
+
+        h1 = np.sqrt((corners[0][0] - corners[2][0]) ** 2 + (corners[0][1] - corners[2][1]) ** 2)
+        h2 = np.sqrt((corners[1][0] - corners[3][0]) ** 2 + (corners[1][1] - corners[3][1]) ** 2)
+        h = max(int(h1), int(h2))
+
+        # Adding 25 pixels to each side so edges and corners are not cut off
+        destination_corners = np.float32(
+            [(0 + 25, 0 + 25), (w - 1 + 25, 0 + 25), (0 + 25, h - 1 + 25), (w - 1 + 25, h - 1 + 25)])
+
+        return destination_corners, h, w
+    
+    def unwarp(self, img, corners, dst):
+        """
+        Args:
+            img: np.array
+            src: list
+            dst: list
+        Returns:
+            un_warped: np.array
+        """
+        h, w = img.shape[:2]
+        H, _ = cv.findHomography(corners, dst, method=cv.RANSAC, ransacReprojThreshold=3.0)
+        print('\nThe homography matrix is: \n', H)
+        un_warped = cv.warpPerspective(img, H, (w, h), flags=cv.INTER_LINEAR)
+
+        return un_warped
+
+    def getCornerPairs(self, img):
+
+        #define outer contour
+        outerContour = self.getOuterContour(img)
+
+        #set epsilon value
+        epsilon = 0.02 * cv.arcLength(outerContour, True)
+        
+        #get approximate corners of outer contour
+        cntCorners = cv.approxPolyDP(outerContour, epsilon, True)
+        cntCorners = [ [i[0][0], i[0][1]] for i in cntCorners]
+
+        #set coordinates to correct order
+        corners = cntCorners[0], cntCorners[3], cntCorners[1], cntCorners[2]
+
+        return corners
+    
+    def homography(self, img):
+
+        # Corner Order: Top Left, Top Right, Bottom Left, Bottom Right
+        corners = self.getCornerPairs(img)
+        destinations = self.get_destination_points(corners)
+
+        corners = np.array(corners)
+        unwarpedImg = self.unwarp(img, corners, destinations[0])
+
+        unwarpedCorners = self.getCornerPairs(unwarpedImg)
+        # Adding 25 pixels to each side so edges and corners are not cut off
+        croppedImg = unwarpedImg[0:unwarpedCorners[2][1] + 25, 0:unwarpedCorners[3][0] + 25]
+
+        return croppedImg
